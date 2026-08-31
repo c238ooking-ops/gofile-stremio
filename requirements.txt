@@ -1,4 +1,0 @@
-fastapi
-uvicorn
-playwright==1.62.0
-requests
