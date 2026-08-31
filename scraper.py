@@ -24,7 +24,7 @@ def scrape():
 
         page.on("request", intercept)
         page.goto(ROOT_URL, wait_until="networkidle", timeout=60000)
-        time.sleep(3)
+        time.sleep(4)
         browser.close()
 
     headers = captured["headers"]
@@ -42,39 +42,53 @@ def scrape():
         visited.add(folder_id)
 
         page_num = 1
+        seen_in_folder = set()
+
         while True:
-            api_url = f"https://api.gofile.io/contents/{folder_id}?page={page_num}&pageSize=1000&sortField=createTime&sortDirection=-1"
+            api_url = f"https://api.gofile.io/contents/{folder_id}?page={page_num}&pageSize=100&sortField=createTime&sortDirection=-1"
             try:
                 res = session.get(api_url, timeout=20).json()
                 if res.get("status") != "ok":
                     break
+
                 data = res.get("data", {})
                 children = data.get("children", {})
                 if not children:
                     break
 
+                new_items_found = 0
                 for item_id, item in children.items():
-                    if item.get("type") == "folder":
+                    if item_id in seen_in_folder:
+                        continue
+                    seen_in_folder.add(item_id)
+                    new_items_found += 1
+
+                    item_type = item.get("type", "")
+                    if item_type == "folder":
                         code = item.get("code") or item.get("id") or item_id
                         if code not in visited:
                             folders_queue.append((code, item.get("name", "")))
                     else:
-                        dl_url = item.get("link") or item.get("directDownload")
+                        dl_url = item.get("link") or item.get("directDownload") or item.get("downloadPage")
                         size = item.get("size", 0)
                         if dl_url:
                             all_files[item_id] = {
                                 "id": f"gofile:{item_id}",
+                                "item_id": item_id,
                                 "name": item.get("name", "Untitled"),
                                 "url": dl_url,
-                                "size": f"{(size / (1024 * 1024)):.2f} MB"
+                                "size": f"{(size / (1024 * 1024)):.2f} MB" if size else "Unknown"
                             }
 
-                if page_num >= data.get("totalChildrenPages", 1):
+                # If no new items are returned on this page, the folder is finished
+                if new_items_found == 0:
                     break
                 page_num += 1
             except Exception as e:
-                print(f"Error reading {folder_id}: {e}")
+                print(f"Error reading {folder_id} on page {page_num}: {e}")
                 break
+
+        print(f"📂 Folder [{folder_name}] indexed {len(seen_in_folder)} items.")
 
     output = {
         "headers": headers,
@@ -84,7 +98,7 @@ def scrape():
 
     with open("data.json", "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2)
-    print(f"✅ Extracted {len(output['files'])} files successfully.")
+    print(f"🎉 Total files indexed across all folders: {len(output['files'])}")
 
 if __name__ == "__main__":
     scrape()
