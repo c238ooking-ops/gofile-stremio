@@ -1,22 +1,16 @@
 import json
 import time
-import requests
-from collections import deque
 from playwright.sync_api import sync_playwright
 
 ROOT_URL = "https://gofile.io/d/OBVVp1LI"
-ROOT_FOLDER_ID = "OBVVp1LI"
 
-def parse_cookie_token(cookie_str):
-    for part in cookie_str.split(";"):
-        part = part.strip()
-        if part.startswith("accountToken="):
-            return part.split("=", 1)[1]
-    return ""
-
-def scrape():
-    print("🌐 Launching Chromium on GitHub runner...")
-    auth_data = {}
+def scrape_via_browser_interception():
+    print("🌐 Launching Chromium browser runner...")
+    
+    captured_data = {
+        "auth": {},
+        "files": {}
+    }
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -30,113 +24,92 @@ def scrape():
         )
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 720}
+            viewport={"width": 1280, "height": 800}
         )
         page = context.new_page()
 
-        print("📄 Loading Gofile page to generate active guest session...")
-        page.goto(ROOT_URL, wait_until="networkidle", timeout=60000)
-        page.wait_for_timeout(4000)
+        def handle_response(response):
+            # Intercept every content data payload returned to the webpage
+            if "contents/" in response.url:
+                try:
+                    req_headers = dict(response.request.headers)
+                    if req_headers and not captured_data["auth"]:
+                        captured_data["auth"] = req_headers
 
-        # Retrieve cookies and local storage tokens
+                    res_json = response.json()
+                    if res_json.get("status") == "ok":
+                        children = res_json.get("data", {}).get("children", {})
+                        for item_id, item in children.items():
+                            if item.get("type") != "folder":
+                                dl_url = item.get("link") or item.get("directDownload") or item.get("downloadPage")
+                                size = item.get("size", 0)
+                                size_mb = f"{(size / (1024 * 1024)):.2f} MB" if size else "Unknown"
+
+                                if item_id not in captured_data["files"] and dl_url:
+                                    captured_data["files"][item_id] = {
+                                        "id": f"gofile:{item_id}",
+                                        "item_id": item_id,
+                                        "name": item.get("name", "Untitled"),
+                                        "url": dl_url,
+                                        "size": size_mb
+                                    }
+                except Exception:
+                    pass
+
+        page.on("response", handle_response)
+
+        print("📄 Navigating to root folder and waiting for Gofile DOM to hydrate...")
+        page.goto(ROOT_URL, wait_until="networkidle", timeout=60000)
+        page.wait_for_timeout(5000)
+
+        # Scroll down and trigger pagination if folder has many items
+        for _ in range(5):
+            page.mouse.wheel(0, 5000)
+            page.wait_for_timeout(1500)
+
+        # Find any subfolder links rendered on screen and click into them
+        subfolders = page.locator("a[href*='/d/']").all()
+        subfolder_urls = []
+        for sf in subfolders:
+            href = sf.get_attribute("href")
+            if href and href not in subfolder_urls and href != "/d/OBVVp1LI" and ROOT_URL not in href:
+                subfolder_urls.append(href if href.startswith("http") else f"https://gofile.io{href}")
+
+        print(f"📂 Found {len(subfolder_urls)} subfolder(s). Navigating into each...")
+
+        for s_url in subfolder_urls:
+            try:
+                print(f"➜ Opening subfolder: {s_url}")
+                page.goto(s_url, wait_until="networkidle", timeout=40000)
+                page.wait_for_timeout(3000)
+                for _ in range(4):
+                    page.mouse.wheel(0, 5000)
+                    page.wait_for_timeout(1000)
+            except Exception as e:
+                print(f"Subfolder notice: {e}")
+
         cookies = context.cookies()
         cookie_header = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
         
-        token = page.evaluate("""() => {
-            return localStorage.getItem('accountToken') || localStorage.getItem('token') || '';
-        }""")
-
-        if not token:
-            token = parse_cookie_token(cookie_header)
-
-        auth_data = {
-            "token": token,
-            "cookie": cookie_header
-        }
-        print(f"🔑 Captured token: {token[:8]}... (Valid: {bool(token)})")
+        token = page.evaluate("() => localStorage.getItem('accountToken') || localStorage.getItem('token') || ''")
 
         browser.close()
 
-    # Now use Python requests with the captured token to crawl all folders
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Origin": "https://gofile.io",
-        "Referer": "https://gofile.io/",
-        "Authorization": f"Bearer {auth_data['token']}",
-        "Cookie": auth_data["cookie"]
-    })
-
-    folders_queue = deque([(ROOT_FOLDER_ID, "Root Folder")])
-    visited = set()
-    all_files = {}
-
-    print("🚀 Crawling all folders and files...")
-
-    while folders_queue:
-        folder_id, folder_name = folders_queue.popleft()
-        if folder_id in visited:
-            continue
-        visited.add(folder_id)
-
-        page_num = 1
-        seen_in_folder = 0
-
-        while True:
-            api_url = f"https://api.gofile.io/contents/{folder_id}?page={page_num}&pageSize=100&sortField=createTime&sortDirection=-1"
-            try:
-                res = session.get(api_url, timeout=20).json()
-                if res.get("status") != "ok":
-                    print(f"⚠️ API status: {res.get('status')} on folder {folder_id}")
-                    break
-
-                data = res.get("data", {})
-                children = data.get("children", {})
-                if not children:
-                    break
-
-                for item_id, item in children.items():
-                    seen_in_folder += 1
-                    item_type = item.get("type", "")
-
-                    if item_type == "folder":
-                        code = item.get("code") or item.get("id") or item_id
-                        if code not in visited and all(code != f[0] for f in folders_queue):
-                            folders_queue.append((code, item.get("name", "")))
-                    else:
-                        dl_url = item.get("link") or item.get("directDownload") or item.get("downloadPage")
-                        size = item.get("size", 0)
-                        size_mb = f"{(size / (1024 * 1024)):.2f} MB" if size else "Unknown"
-
-                        if item_id not in all_files and dl_url:
-                            all_files[item_id] = {
-                                "id": f"gofile:{item_id}",
-                                "item_id": item_id,
-                                "name": item.get("name", "Untitled"),
-                                "url": dl_url,
-                                "size": size_mb
-                            }
-
-                total_pages = data.get("totalChildrenPages", 1)
-                if page_num >= total_pages or len(children) == 0:
-                    break
-                page_num += 1
-            except Exception as e:
-                print(f"❌ Crawl error on folder {folder_id}: {e}")
-                break
-
-        print(f"📂 [{folder_name}] Indexed {seen_in_folder} total items.")
+    file_list = list(captured_data["files"].values())
+    print(f"🎉 Crawl finished: Intercepted {len(file_list)} total playable files.")
 
     output = {
-        "auth": auth_data,
-        "files": list(all_files.values()),
+        "auth": {
+            "token": token,
+            "cookie": cookie_header,
+            "headers": captured_data["auth"]
+        },
+        "files": file_list,
         "updated_at": int(time.time())
     }
 
     with open("data.json", "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2)
 
-    print(f"🎉 Successfully saved {len(output['files'])} files to data.json")
-
 if __name__ == "__main__":
-    scrape()
+    scrape_via_browser_interception()
