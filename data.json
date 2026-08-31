@@ -1,8 +1,8 @@
 {
   "headers": {
     "sec-ch-ua-platform": "\"Windows\"",
-    "authorization": "Bearer uXQBMIzK9wgSLVgOSr583ASrUSIOFwZ7",
-    "x-website-token": "cdf75cb83d13a1934d73a06ca175bdec2142d81c0736a0dd3feba090bcf6da1b",
+    "authorization": "Bearer fVm8r1rvDtbOS3ih8nq4gMbgwDZhXRJR",
+    "x-website-token": "9b67080ef0c79d2d419232492a20570bf0b960595e0e856c1e154f70b5e1f701",
     "referer": "https://gofile.io/",
     "sec-ch-ua": "\"Not=A?Brand\";v=\"99\", \"HeadlessChrome\";v=\"151\", \"Chromium\";v=\"151\"",
     "sec-ch-ua-mobile": "?0",
@@ -155,5 +155,5 @@
       "size": "4347.72 MB"
     }
   ],
-  "updated_at": 1788190185
+  "updated_at": 1788190723
 }
