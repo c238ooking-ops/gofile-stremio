@@ -4,8 +4,8 @@ import threading
 from collections import deque
 from contextlib import asynccontextmanager
 import uvicorn
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import RedirectResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from playwright.sync_api import sync_playwright
 import requests
@@ -51,7 +51,7 @@ class SessionManager:
                     page.goto(self.root_url, wait_until="networkidle", timeout=45000)
                     time.sleep(3)
                 except Exception as e:
-                    print(f"Page load note: {e}")
+                    print(f"Page load notice: {e}")
 
                 browser.close()
 
@@ -67,8 +67,9 @@ class SessionManager:
         if time.time() - self.last_auth_time > 900 or not self.session.headers:
             self.refresh_credentials()
 
+session_mgr = SessionManager(ROOT_URL)
+
 def fetch_folder_with_backoff(session_mgr, folder_id, page_num=1, max_retries=4):
-    """Fetches folder items with progressive backoff and token refresh."""
     api_url = f"https://api.gofile.io/contents/{folder_id}?page={page_num}&pageSize=1000&sortField=createTime&sortDirection=-1"
     
     for attempt in range(max_retries):
@@ -87,7 +88,7 @@ def fetch_folder_with_backoff(session_mgr, folder_id, page_num=1, max_retries=4)
                     session_mgr.refresh_credentials()
             else:
                 return res
-        except Exception as e:
+        except Exception:
             time.sleep(2)
             
     return None
@@ -99,14 +100,12 @@ def crawl_gofile_recursive():
         if cached_videos and (time.time() - last_scan_time < 1800):
             return cached_videos
 
-        session_mgr = SessionManager(ROOT_URL)
         session_mgr.ensure_fresh()
-
         folders_queue = deque([("OBVVp1LI", "Root Folder")])
         visited_folders = set()
         all_files = {}
 
-        print("🚀 Crawling complete Gofile directory tree...")
+        print("🚀 Crawling Gofile folder tree...")
 
         while folders_queue:
             current_folder_id, current_folder_name = folders_queue.popleft()
@@ -115,9 +114,6 @@ def crawl_gofile_recursive():
             visited_folders.add(current_folder_id)
 
             page_num = 1
-            folder_found_files = 0
-            folder_found_subfolders = 0
-
             while True:
                 res = fetch_folder_with_backoff(session_mgr, current_folder_id, page_num)
                 if not res or res.get("status") != "ok":
@@ -136,7 +132,6 @@ def crawl_gofile_recursive():
                         folder_code = item.get("code") or item.get("id") or item_id
                         if folder_code not in visited_folders and all(folder_code != f[0] for f in folders_queue):
                             folders_queue.append((folder_code, item_name))
-                            folder_found_subfolders += 1
                     else:
                         dl_url = item.get("link") or item.get("directDownload") or item.get("downloadPage")
                         if not dl_url:
@@ -148,24 +143,22 @@ def crawl_gofile_recursive():
                         if item_id not in all_files:
                             all_files[item_id] = {
                                 "id": f"gofile:{item_id}",
+                                "item_id": item_id,
                                 "name": item_name,
                                 "url": dl_url,
                                 "size": size_mb
                             }
-                            folder_found_files += 1
 
                 total_pages = data.get("totalChildrenPages", 1)
                 if page_num >= total_pages or len(children) == 0:
                     break
                 page_num += 1
 
-            print(f"📂 [{current_folder_name}] ➜ {folder_found_files} file(s), {folder_found_subfolders} subfolder(s)")
-
         total_list = list(all_files.values())
         if total_list:
             cached_videos = total_list
             last_scan_time = time.time()
-            print(f"✅ Crawl complete: {len(cached_videos)} total unique files across {len(visited_folders)} folders.")
+            print(f"✅ Crawl complete: {len(cached_videos)} playable files found.")
 
         return cached_videos
 
@@ -210,7 +203,6 @@ def get_manifest():
         ]
     }
 
-# Catalog endpoint supporting Search and Pagination (Skip)
 @app.get("/catalog/other/gofile_catalog.json")
 @app.get("/catalog/other/gofile_catalog/{extra_params}.json")
 def get_catalog(extra_params: str = None):
@@ -234,7 +226,6 @@ def get_catalog(extra_params: str = None):
         if not search_query or search_query in v["name"].lower()
     ]
 
-    # Stremio pages by chunks of 100
     paged = filtered[skip:skip + 100] if skip else filtered
 
     metas = [
@@ -263,20 +254,79 @@ def get_meta(video_id: str):
         }
     }
 
+# Stream definition: route through the authenticated proxy
 @app.get("/stream/other/{video_id}.json")
-def get_stream(video_id: str):
+def get_stream(video_id: str, request: Request):
     videos = cached_videos or crawl_gofile_recursive()
     vid = next((v for v in videos if v["id"] == video_id), None)
     if not vid:
         raise HTTPException(status_code=404, detail="Stream not found")
+    
+    base_host = str(request.base_url).rstrip("/")
+    clean_id = vid["item_id"]
+    proxy_stream_url = f"{base_host}/proxy/stream/{clean_id}"
+
     return {
         "streams": [
             {
-                "title": "Direct Stream",
-                "url": vid["url"]
+                "title": f"Play: {vid['name']}",
+                "url": proxy_stream_url,
+                "behaviorHints": {
+                    "notWebReady": False
+                }
             }
         ]
     }
+
+# Authenticated Video Proxy with Full Byte-Range Seeking Support
+@app.get("/proxy/stream/{item_id}")
+def proxy_video_stream(item_id: str, request: Request):
+    session_mgr.ensure_fresh()
+    videos = cached_videos or crawl_gofile_recursive()
+    vid = next((v for v in videos if v["item_id"] == item_id), None)
+    
+    if not vid or not vid.get("url"):
+        raise HTTPException(status_code=404, detail="Video URL not found")
+
+    target_url = vid["url"]
+    
+    # Forward Range headers for video seeking
+    req_headers = dict(session_mgr.session.headers)
+    if "range" in request.headers:
+        req_headers["Range"] = request.headers["range"]
+
+    try:
+        upstream_res = requests.get(target_url, headers=req_headers, stream=True, timeout=25)
+        
+        # Strip hop-by-hop headers
+        exclude_headers = {"content-encoding", "content-length", "transfer-encoding", "connection"}
+        response_headers = {
+            name: value for name, value in upstream_res.headers.items()
+            if name.lower() not in exclude_headers
+        }
+        
+        if "content-length" in upstream_res.headers:
+            response_headers["Content-Length"] = upstream_res.headers["content-length"]
+        if "content-range" in upstream_res.headers:
+            response_headers["Content-Range"] = upstream_res.headers["content-range"]
+        if "accept-ranges" in upstream_res.headers:
+            response_headers["Accept-Ranges"] = upstream_res.headers["accept-ranges"]
+        else:
+            response_headers["Accept-Ranges"] = "bytes"
+
+        def stream_generator():
+            for chunk in upstream_res.iter_content(chunk_size=1024 * 128):
+                if chunk:
+                    yield chunk
+
+        return StreamingResponse(
+            stream_generator(),
+            status_code=upstream_res.status_code,
+            headers=response_headers,
+            media_type=upstream_res.headers.get("content-type", "video/mp4")
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Proxy error: {str(e)}")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
