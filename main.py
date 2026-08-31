@@ -7,7 +7,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from playwright.sync_api import sync_playwright
-import requests
 
 app = FastAPI()
 
@@ -24,130 +23,104 @@ cached_videos = []
 last_scan_time = 0
 is_crawling = False
 
-class SessionManager:
-    def __init__(self, root_url):
-        self.root_url = root_url
-        self.session = requests.Session()
-        self.last_auth_time = 0
-        self.refresh_credentials()
-
-    def refresh_credentials(self):
-        print("🌐 Launching Chromium in Docker...")
-        captured = {"headers": {}}
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-dev-shm-usage",
-                        "--disable-gpu",
-                        "--no-zygote",
-                        "--single-process"
-                    ]
-                )
-                context = browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                    viewport={"width": 1280, "height": 720}
-                )
-                page = context.new_page()
-
-                def intercept_request(request):
-                    if "contents/" in request.url:
-                        captured["headers"] = dict(request.headers)
-
-                page.on("request", intercept_request)
-                try:
-                    # Use domcontentloaded instead of networkidle to prevent timeouts
-                    page.goto(self.root_url, wait_until="domcontentloaded", timeout=30000)
-                    time.sleep(3)
-                except Exception as nav_err:
-                    print(f"Navigation warning (proceeding): {nav_err}")
-                
-                browser.close()
-
-            if captured["headers"]:
-                self.session.headers.clear()
-                self.session.headers.update(captured["headers"])
-                self.last_auth_time = time.time()
-                print("✅ Session credentials captured successfully.")
-            else:
-                print("⚠️ Warning: No direct contents headers captured, relying on fallback.")
-        except Exception as e:
-            print(f"❌ Playwright engine crash: {e}")
-
-    def ensure_fresh(self):
-        if time.time() - self.last_auth_time > 900:
-            self.refresh_credentials()
-
-def crawl_gofile():
+def scrape_gofile_dom():
+    """Extracts directory files straight from the rendered browser page."""
     global cached_videos, last_scan_time, is_crawling
     if is_crawling:
         return cached_videos
-    
-    if cached_videos and (time.time() - last_scan_time < 1800):
-        return cached_videos
 
     is_crawling = True
+    found_videos = []
+    print("🌐 Launching Chromium to scrape rendered Gofile DOM...")
+
     try:
-        session_mgr = SessionManager(ROOT_URL)
-        folders_queue = deque([("OBVVp1LI", "Root Folder")])
-        visited_folders = set()
-        found_videos = []
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--single-process"
+                ]
+            )
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 720}
+            )
+            page = context.new_page()
 
-        print("🚀 Crawling Gofile library...")
+            page.goto(ROOT_URL, wait_until="networkidle", timeout=60000)
+            # Give Gofile's UI 4 seconds to render items
+            page.wait_for_timeout(4000)
 
-        while folders_queue:
-            current_folder_id, current_name = folders_queue.popleft()
-            if current_folder_id in visited_folders:
-                continue
-            visited_folders.add(current_folder_id)
+            # Extract rendered file items directly from Gofile's global state or DOM links
+            extracted = page.evaluate("""() => {
+                let items = [];
+                // 1. Try extracting from Gofile frontend memory state
+                if (window.app && window.app.currentFolder && window.app.currentFolder.children) {
+                    for (let id in window.app.currentFolder.children) {
+                        let c = window.app.currentFolder.children[id];
+                        items.push({
+                            id: id,
+                            name: c.name || "Untitled",
+                            url: c.link || c.directDownload || "",
+                            size: c.size ? (c.size / (1024 * 1024)).toFixed(2) + " MB" : "Unknown"
+                        });
+                    }
+                }
+                
+                // 2. Fallback: Parse anchor elements if memory state is obfuscated
+                if (items.length === 0) {
+                    document.querySelectorAll("a[href*='srv-file'], a[id^='content_']").forEach((el, idx) => {
+                        let href = el.getAttribute("href");
+                        let name = el.innerText.trim() || ("File " + (idx + 1));
+                        if (href && href.startsWith("http")) {
+                            items.push({
+                                id: "item_" + idx,
+                                name: name,
+                                url: href,
+                                size: "Media File"
+                            });
+                        }
+                    });
+                }
+                return items;
+            }""")
 
-            api_url = f"https://api.gofile.io/contents/{current_folder_id}?page=1&pageSize=100"
-            session_mgr.ensure_fresh()
+            browser.close()
 
-            try:
-                res = session_mgr.session.get(api_url, timeout=20).json()
-                if res.get("status") == "ok":
-                    children = res.get("data", {}).get("children", {})
-                    for item_id, item in children.items():
-                        if item.get("type") == "folder":
-                            code = item.get("code") or item.get("id") or item_id
-                            folders_queue.append((code, item.get("name", "")))
-                        else:
-                            dl_url = item.get("link") or item.get("directDownload")
-                            name = item.get("name", "Untitled")
-                            size = item.get("size", 0)
-                            if dl_url:
-                                found_videos.append({
-                                    "id": f"gofile:{item_id}",
-                                    "name": name,
-                                    "url": dl_url,
-                                    "size": f"{(size / (1024*1024)):.2f} MB"
-                                })
-            except Exception as read_err:
-                print(f"⚠️ Error reading folder {current_folder_id}: {read_err}")
+            if extracted:
+                for item in extracted:
+                    if item.get("url"):
+                        found_videos.append({
+                            "id": f"gofile:{item['id']}",
+                            "name": item["name"],
+                            "url": item["url"],
+                            "size": item["size"]
+                        })
+                print(f"🎉 Successfully extracted {len(found_videos)} files from Gofile page.")
 
-        if found_videos:
-            cached_videos = found_videos
-            last_scan_time = time.time()
-            print(f"🎉 Crawling finished: {len(cached_videos)} items found.")
-    except Exception as general_err:
-        print(f"❌ General crawl error: {general_err}")
+    except Exception as e:
+        print(f"❌ Scraping error: {e}")
     finally:
         is_crawling = False
 
+    if found_videos:
+        cached_videos = found_videos
+        last_scan_time = time.time()
+
     return cached_videos
 
-# Automatically warm up cache on boot
-@app.on_event("startup")
-def startup_event():
-    threading.Thread(target=crawl_gofile, daemon=True).start()
-
-@app.get("/")
+# Support both GET and HEAD on root for Render's health checks
+@app.api_route("/", methods=["GET", "HEAD"])
 def root():
     return RedirectResponse(url="/manifest.json")
+
+@app.on_event("startup")
+def on_startup():
+    threading.Thread(target=scrape_gofile_dom, daemon=True).start()
 
 @app.get("/manifest.json")
 def get_manifest():
@@ -171,7 +144,7 @@ def get_manifest():
 @app.get("/catalog/other/gofile_catalog.json")
 @app.get("/catalog/other/gofile_catalog/search={search_query}.json")
 def get_catalog(search_query: str = None):
-    videos = crawl_gofile()
+    videos = cached_videos or scrape_gofile_dom()
     metas = []
     for vid in videos:
         if search_query and search_query.lower() not in vid["name"].lower():
@@ -187,7 +160,7 @@ def get_catalog(search_query: str = None):
 
 @app.get("/meta/other/{video_id}.json")
 def get_meta(video_id: str):
-    videos = crawl_gofile()
+    videos = cached_videos or scrape_gofile_dom()
     vid = next((v for v in videos if v["id"] == video_id), None)
     return {
         "meta": {
@@ -200,7 +173,7 @@ def get_meta(video_id: str):
 
 @app.get("/stream/other/{video_id}.json")
 def get_stream(video_id: str):
-    videos = crawl_gofile()
+    videos = cached_videos or scrape_gofile_dom()
     vid = next((v for v in videos if v["id"] == video_id), None)
     if not vid:
         raise HTTPException(status_code=404, detail="Stream not found")
