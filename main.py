@@ -44,7 +44,6 @@ class SessionManager:
 
                 def intercept_request(request):
                     if "contents/" in request.url:
-                        # Capture authorization headers sent by Gofile's official frontend
                         captured["headers"] = dict(request.headers)
 
                 page.on("request", intercept_request)
@@ -53,22 +52,45 @@ class SessionManager:
                     time.sleep(3)
                 except Exception as e:
                     print(f"Page load note: {e}")
-                
+
                 browser.close()
 
             if captured["headers"]:
                 self.session.headers.clear()
                 self.session.headers.update(captured["headers"])
                 self.last_auth_time = time.time()
-                print("✅ Successfully captured active Gofile session credentials.")
-            else:
-                print("⚠️ Warning: No request to /contents/ was intercepted.")
+                print("✅ Captured active Gofile session credentials.")
         except Exception as e:
             print(f"❌ Playwright launch error: {e}")
 
     def ensure_fresh(self):
         if time.time() - self.last_auth_time > 900 or not self.session.headers:
             self.refresh_credentials()
+
+def fetch_folder_with_backoff(session_mgr, folder_id, page_num=1, max_retries=4):
+    """Fetches folder items with progressive backoff and token refresh."""
+    api_url = f"https://api.gofile.io/contents/{folder_id}?page={page_num}&pageSize=1000&sortField=createTime&sortDirection=-1"
+    
+    for attempt in range(max_retries):
+        session_mgr.ensure_fresh()
+        try:
+            res = session_mgr.session.get(api_url, timeout=20).json()
+            status = res.get("status")
+
+            if status == "ok":
+                return res
+            elif status in ["error-rateLimit", "error-auth", "error-token"]:
+                cool_off = (attempt + 1) * 6
+                print(f"⏳ [{status}] Backing off for {cool_off}s...")
+                time.sleep(cool_off)
+                if status in ["error-auth", "error-token"]:
+                    session_mgr.refresh_credentials()
+            else:
+                return res
+        except Exception as e:
+            time.sleep(2)
+            
+    return None
 
 def crawl_gofile_recursive():
     global cached_videos, last_scan_time
@@ -82,72 +104,73 @@ def crawl_gofile_recursive():
 
         folders_queue = deque([("OBVVp1LI", "Root Folder")])
         visited_folders = set()
-        found_videos = []
+        all_files = {}
 
-        print("🚀 Crawling Gofile folder tree...")
+        print("🚀 Crawling complete Gofile directory tree...")
 
         while folders_queue:
-            current_folder_id, current_name = folders_queue.popleft()
+            current_folder_id, current_folder_name = folders_queue.popleft()
             if current_folder_id in visited_folders:
                 continue
             visited_folders.add(current_folder_id)
 
             page_num = 1
+            folder_found_files = 0
+            folder_found_subfolders = 0
+
             while True:
-                api_url = f"https://api.gofile.io/contents/{current_folder_id}?page={page_num}&pageSize=50&sortField=createTime&sortDirection=-1"
-                try:
-                    res = session_mgr.session.get(api_url, timeout=20).json()
-                    status = res.get("status")
-
-                    if status != "ok":
-                        print(f"⚠️ Folder [{current_name}] response status: {status}")
-                        break
-
-                    data = res.get("data", {})
-                    children = data.get("children", {})
-                    if not children:
-                        break
-
-                    for item_id, item in children.items():
-                        item_type = item.get("type", "")
-                        item_name = item.get("name", "Untitled")
-
-                        if item_type == "folder":
-                            folder_code = item.get("code") or item.get("id") or item_id
-                            if folder_code not in visited_folders:
-                                folders_queue.append((folder_code, item_name))
-                        else:
-                            dl_url = item.get("link") or item.get("directDownload") or item.get("downloadPage")
-                            size = item.get("size", 0)
-                            size_mb = f"{(size / (1024 * 1024)):.2f} MB" if size else "Unknown size"
-
-                            if dl_url:
-                                found_videos.append({
-                                    "id": f"gofile:{item_id}",
-                                    "name": item_name,
-                                    "url": dl_url,
-                                    "size": size_mb
-                                })
-
-                    total_pages = data.get("totalChildrenPages", 1)
-                    if page_num >= total_pages or len(children) == 0:
-                        break
-                    page_num += 1
-                except Exception as e:
-                    print(f"❌ Error querying {current_folder_id} page {page_num}: {e}")
+                res = fetch_folder_with_backoff(session_mgr, current_folder_id, page_num)
+                if not res or res.get("status") != "ok":
                     break
 
-        if found_videos:
-            cached_videos = found_videos
+                data = res.get("data", {})
+                children = data.get("children", {})
+                if not children:
+                    break
+
+                for item_id, item in children.items():
+                    item_type = item.get("type", "")
+                    item_name = item.get("name", item_id)
+
+                    if item_type == "folder":
+                        folder_code = item.get("code") or item.get("id") or item_id
+                        if folder_code not in visited_folders and all(folder_code != f[0] for f in folders_queue):
+                            folders_queue.append((folder_code, item_name))
+                            folder_found_subfolders += 1
+                    else:
+                        dl_url = item.get("link") or item.get("directDownload") or item.get("downloadPage")
+                        if not dl_url:
+                            dl_url = f"https://api.gofile.io/contents/{item_id}"
+
+                        size = item.get("size", 0)
+                        size_mb = f"{(size / (1024 * 1024)):.2f} MB" if size else "Unknown size"
+
+                        if item_id not in all_files:
+                            all_files[item_id] = {
+                                "id": f"gofile:{item_id}",
+                                "name": item_name,
+                                "url": dl_url,
+                                "size": size_mb
+                            }
+                            folder_found_files += 1
+
+                total_pages = data.get("totalChildrenPages", 1)
+                if page_num >= total_pages or len(children) == 0:
+                    break
+                page_num += 1
+
+            print(f"📂 [{current_folder_name}] ➜ {folder_found_files} file(s), {folder_found_subfolders} subfolder(s)")
+
+        total_list = list(all_files.values())
+        if total_list:
+            cached_videos = total_list
             last_scan_time = time.time()
-            print(f"🎉 Crawl finished: Found {len(cached_videos)} total playable files.")
+            print(f"✅ Crawl complete: {len(cached_videos)} total unique files across {len(visited_folders)} folders.")
 
         return cached_videos
 
-# Lifespan event handler for FastAPI
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Warm up cache in background on startup
     threading.Thread(target=crawl_gofile_recursive, daemon=True).start()
     yield
 
@@ -179,26 +202,52 @@ def get_manifest():
                 "type": "other",
                 "id": "gofile_catalog",
                 "name": "Gofile Library",
-                "extra": [{"name": "search", "isRequired": False}]
+                "extra": [
+                    {"name": "search", "isRequired": False},
+                    {"name": "skip", "isRequired": False}
+                ]
             }
         ]
     }
 
+# Catalog endpoint supporting Search and Pagination (Skip)
 @app.get("/catalog/other/gofile_catalog.json")
-@app.get("/catalog/other/gofile_catalog/search={search_query}.json")
-def get_catalog(search_query: str = None):
+@app.get("/catalog/other/gofile_catalog/{extra_params}.json")
+def get_catalog(extra_params: str = None):
     videos = cached_videos or crawl_gofile_recursive()
-    metas = []
-    for vid in videos:
-        if search_query and search_query.lower() not in vid["name"].lower():
-            continue
-        metas.append({
+    
+    search_query = None
+    skip = 0
+
+    if extra_params:
+        for param in extra_params.split("&"):
+            if param.startswith("search="):
+                search_query = param.replace("search=", "").lower()
+            elif param.startswith("skip="):
+                try:
+                    skip = int(param.replace("skip=", ""))
+                except ValueError:
+                    skip = 0
+
+    filtered = [
+        v for v in videos
+        if not search_query or search_query in v["name"].lower()
+    ]
+
+    # Stremio pages by chunks of 100
+    paged = filtered[skip:skip + 100] if skip else filtered
+
+    metas = [
+        {
             "id": vid["id"],
             "name": vid["name"],
             "type": "other",
             "poster": "https://gofile.io/dist/img/logo-small.png",
             "description": f"Size: {vid['size']}"
-        })
+        }
+        for vid in paged
+    ]
+
     return {"metas": metas}
 
 @app.get("/meta/other/{video_id}.json")
