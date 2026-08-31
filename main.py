@@ -1,8 +1,10 @@
 import os
 import time
-import uvicorn
+import threading
 from collections import deque
+import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from playwright.sync_api import sync_playwright
 import requests
@@ -20,6 +22,7 @@ app.add_middleware(
 ROOT_URL = "https://gofile.io/d/OBVVp1LI"
 cached_videos = []
 last_scan_time = 0
+is_crawling = False
 
 class SessionManager:
     def __init__(self, root_url):
@@ -29,80 +32,122 @@ class SessionManager:
         self.refresh_credentials()
 
     def refresh_credentials(self):
-        print("Launching Chromium to capture fresh credentials...")
+        print("🌐 Launching Chromium in Docker...")
         captured = {"headers": {}}
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
-            context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            )
-            page = context.new_page()
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=[
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
+                        "--no-zygote",
+                        "--single-process"
+                    ]
+                )
+                context = browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                    viewport={"width": 1280, "height": 720}
+                )
+                page = context.new_page()
 
-            def intercept_request(request):
-                if "contents/" in request.url:
-                    captured["headers"] = dict(request.headers)
+                def intercept_request(request):
+                    if "contents/" in request.url:
+                        captured["headers"] = dict(request.headers)
 
-            page.on("request", intercept_request)
-            try:
-                page.goto(self.root_url, wait_until="networkidle", timeout=45000)
-                time.sleep(2)
-            except Exception as e:
-                print(f"Playwright navigation notice: {e}")
-            browser.close()
+                page.on("request", intercept_request)
+                try:
+                    # Use domcontentloaded instead of networkidle to prevent timeouts
+                    page.goto(self.root_url, wait_until="domcontentloaded", timeout=30000)
+                    time.sleep(3)
+                except Exception as nav_err:
+                    print(f"Navigation warning (proceeding): {nav_err}")
+                
+                browser.close()
 
-        self.session.headers.clear()
-        self.session.headers.update(captured["headers"])
-        self.last_auth_time = time.time()
-        print("Fresh session credentials loaded.")
+            if captured["headers"]:
+                self.session.headers.clear()
+                self.session.headers.update(captured["headers"])
+                self.last_auth_time = time.time()
+                print("✅ Session credentials captured successfully.")
+            else:
+                print("⚠️ Warning: No direct contents headers captured, relying on fallback.")
+        except Exception as e:
+            print(f"❌ Playwright engine crash: {e}")
 
     def ensure_fresh(self):
         if time.time() - self.last_auth_time > 900:
             self.refresh_credentials()
 
 def crawl_gofile():
-    global cached_videos, last_scan_time
+    global cached_videos, last_scan_time, is_crawling
+    if is_crawling:
+        return cached_videos
+    
     if cached_videos and (time.time() - last_scan_time < 1800):
         return cached_videos
 
-    session_mgr = SessionManager(ROOT_URL)
-    folders_queue = deque([("OBVVp1LI", "Root Folder")])
-    visited_folders = set()
-    found_videos = []
+    is_crawling = True
+    try:
+        session_mgr = SessionManager(ROOT_URL)
+        folders_queue = deque([("OBVVp1LI", "Root Folder")])
+        visited_folders = set()
+        found_videos = []
 
-    while folders_queue:
-        current_folder_id, _ = folders_queue.popleft()
-        if current_folder_id in visited_folders:
-            continue
-        visited_folders.add(current_folder_id)
+        print("🚀 Crawling Gofile library...")
 
-        api_url = f"https://api.gofile.io/contents/{current_folder_id}?page=1&pageSize=100"
-        session_mgr.ensure_fresh()
-        
-        try:
-            res = session_mgr.session.get(api_url, timeout=20).json()
-            if res.get("status") == "ok":
-                children = res.get("data", {}).get("children", {})
-                for item_id, item in children.items():
-                    if item.get("type") == "folder":
-                        code = item.get("code") or item.get("id") or item_id
-                        folders_queue.append((code, item.get("name", "")))
-                    else:
-                        dl_url = item.get("link") or item.get("directDownload")
-                        name = item.get("name", "Untitled")
-                        size = item.get("size", 0)
-                        if dl_url:
-                            found_videos.append({
-                                "id": f"gofile:{item_id}",
-                                "name": name,
-                                "url": dl_url,
-                                "size": f"{(size / (1024*1024)):.2f} MB"
-                            })
-        except Exception as e:
-            print(f"Error reading folder {current_folder_id}: {e}")
+        while folders_queue:
+            current_folder_id, current_name = folders_queue.popleft()
+            if current_folder_id in visited_folders:
+                continue
+            visited_folders.add(current_folder_id)
 
-    cached_videos = found_videos
-    last_scan_time = time.time()
+            api_url = f"https://api.gofile.io/contents/{current_folder_id}?page=1&pageSize=100"
+            session_mgr.ensure_fresh()
+
+            try:
+                res = session_mgr.session.get(api_url, timeout=20).json()
+                if res.get("status") == "ok":
+                    children = res.get("data", {}).get("children", {})
+                    for item_id, item in children.items():
+                        if item.get("type") == "folder":
+                            code = item.get("code") or item.get("id") or item_id
+                            folders_queue.append((code, item.get("name", "")))
+                        else:
+                            dl_url = item.get("link") or item.get("directDownload")
+                            name = item.get("name", "Untitled")
+                            size = item.get("size", 0)
+                            if dl_url:
+                                found_videos.append({
+                                    "id": f"gofile:{item_id}",
+                                    "name": name,
+                                    "url": dl_url,
+                                    "size": f"{(size / (1024*1024)):.2f} MB"
+                                })
+            except Exception as read_err:
+                print(f"⚠️ Error reading folder {current_folder_id}: {read_err}")
+
+        if found_videos:
+            cached_videos = found_videos
+            last_scan_time = time.time()
+            print(f"🎉 Crawling finished: {len(cached_videos)} items found.")
+    except Exception as general_err:
+        print(f"❌ General crawl error: {general_err}")
+    finally:
+        is_crawling = False
+
     return cached_videos
+
+# Automatically warm up cache on boot
+@app.on_event("startup")
+def startup_event():
+    threading.Thread(target=crawl_gofile, daemon=True).start()
+
+@app.get("/")
+def root():
+    return RedirectResponse(url="/manifest.json")
 
 @app.get("/manifest.json")
 def get_manifest():
