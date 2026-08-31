@@ -11,20 +11,15 @@ def log(msg):
     print(msg, flush=True)
 
 def scrape():
-    log("🌐 Starting browser session to capture headers & direct links...")
+    log("🌐 Launching Chromium to extract dynamic Gofile session keys...")
     captured_headers = {}
-    auth_token = ""
+    website_token = ""
     auth_event = False
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu"
-            ]
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
         )
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -33,14 +28,14 @@ def scrape():
         page = context.new_page()
 
         def intercept_request(request):
-            nonlocal auth_event, auth_token
+            nonlocal auth_event, website_token
             if "contents/" in request.url:
                 if not captured_headers:
                     captured_headers.update(dict(request.headers))
-                if "authorization" in request.headers:
-                    auth_token = request.headers["authorization"]
-                elif "Authorization" in request.headers:
-                    auth_token = request.headers["Authorization"]
+                if "wt=" in request.url:
+                    parts = request.url.split("wt=")
+                    if len(parts) > 1:
+                        website_token = parts[1].split("&")[0]
                 auth_event = True
 
         page.on("request", intercept_request)
@@ -52,15 +47,13 @@ def scrape():
                     break
                 page.wait_for_timeout(1000)
         except Exception as e:
-            log(f"Navigation warning: {e}")
+            log(f"Browser navigation notice: {e}")
 
         cookies = context.cookies()
         cookie_header = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
         
-        if not auth_token:
-            extracted_token = page.evaluate("() => localStorage.getItem('accountToken') || localStorage.getItem('token') || ''")
-            if extracted_token:
-                auth_token = f"Bearer {extracted_token}"
+        if not website_token:
+            website_token = page.evaluate("() => localStorage.getItem('websiteToken') || ''")
 
         browser.close()
 
@@ -73,10 +66,6 @@ def scrape():
 
     if cookie_header:
         captured_headers["cookie"] = cookie_header
-    if auth_token:
-        captured_headers["authorization"] = auth_token
-
-    log(f"🔑 Auth captured successfully. Token present: {bool(auth_token)}")
 
     session = requests.Session()
     session.headers.update(captured_headers)
@@ -85,7 +74,7 @@ def scrape():
     visited = set()
     all_files = {}
 
-    log("🚀 Crawling directory tree for direct streams...")
+    log("🚀 Crawling Gofile folder tree...")
 
     while folders_queue:
         folder_id, folder_name = folders_queue.popleft()
@@ -99,8 +88,10 @@ def scrape():
 
         while True:
             api_url = f"https://api.gofile.io/contents/{folder_id}?page={page_num}&pageSize=1000&sortField=createTime&sortDirection=-1"
-            res_data = None
+            if website_token:
+                api_url += f"&wt={website_token}"
 
+            res_data = None
             for attempt in range(4):
                 try:
                     time.sleep(0.5)
@@ -135,16 +126,14 @@ def scrape():
                         folders_queue.append((code, item_name))
                         folder_subfolders += 1
                 else:
-                    dl_url = item.get("link") or item.get("directDownload") or item.get("downloadPage")
                     size = item.get("size", 0)
                     size_mb = f"{(size / (1024 * 1024)):.2f} MB" if size else "Unknown"
 
-                    if item_id not in all_files and dl_url:
+                    if item_id not in all_files:
                         all_files[item_id] = {
                             "id": f"gofile:{item_id}",
                             "item_id": item_id,
                             "name": item_name,
-                            "url": dl_url,
                             "size": size_mb
                         }
                         folder_files += 1
@@ -157,14 +146,9 @@ def scrape():
         log(f"📂 [{folder_name}] ➜ {folder_files} files, {folder_subfolders} subfolders.")
 
     file_list = list(all_files.values())
-    log(f"🎉 Crawl finished: {len(file_list)} direct streams indexed.")
+    log(f"🎉 Extracted {len(file_list)} total playable files.")
 
     output_payload = {
-        "auth": {
-            "token": auth_token,
-            "cookie": cookie_header,
-            "headers": captured_headers
-        },
         "files": file_list,
         "updated_at": int(time.time())
     }
