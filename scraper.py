@@ -1,17 +1,17 @@
 import json
 import time
+import sys
 from playwright.sync_api import sync_playwright
 
 ROOT_URL = "https://gofile.io/d/OBVVp1LI"
+ROOT_FOLDER_ID = "OBVVp1LI"
 
-def scrape_via_browser_interception():
-    print("🌐 Launching Chromium browser runner...")
+def log(msg):
+    print(msg, flush=True)
+
+def scrape():
+    log("🌐 Starting Chromium session...")
     
-    captured_data = {
-        "auth": {},
-        "files": {}
-    }
-
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
@@ -24,92 +24,120 @@ def scrape_via_browser_interception():
         )
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 800}
+            viewport={"width": 1280, "height": 720}
         )
         page = context.new_page()
 
-        def handle_response(response):
-            # Intercept every content data payload returned to the webpage
-            if "contents/" in response.url:
-                try:
-                    req_headers = dict(response.request.headers)
-                    if req_headers and not captured_data["auth"]:
-                        captured_data["auth"] = req_headers
+        log(f"📄 Navigating to {ROOT_URL}...")
+        try:
+            # Use domcontentloaded to prevent networkidle infinite hanging
+            page.goto(ROOT_URL, wait_until="domcontentloaded", timeout=40000)
+            page.wait_for_timeout(4000)
+        except Exception as e:
+            log(f"Navigation warning: {e}")
 
-                    res_json = response.json()
-                    if res_json.get("status") == "ok":
-                        children = res_json.get("data", {}).get("children", {})
-                        for item_id, item in children.items():
-                            if item.get("type") != "folder":
-                                dl_url = item.get("link") or item.get("directDownload") or item.get("downloadPage")
-                                size = item.get("size", 0)
-                                size_mb = f"{(size / (1024 * 1024)):.2f} MB" if size else "Unknown"
-
-                                if item_id not in captured_data["files"] and dl_url:
-                                    captured_data["files"][item_id] = {
-                                        "id": f"gofile:{item_id}",
-                                        "item_id": item_id,
-                                        "name": item.get("name", "Untitled"),
-                                        "url": dl_url,
-                                        "size": size_mb
-                                    }
-                except Exception:
-                    pass
-
-        page.on("response", handle_response)
-
-        print("📄 Navigating to root folder and waiting for Gofile DOM to hydrate...")
-        page.goto(ROOT_URL, wait_until="networkidle", timeout=60000)
-        page.wait_for_timeout(5000)
-
-        # Scroll down and trigger pagination if folder has many items
-        for _ in range(5):
-            page.mouse.wheel(0, 5000)
-            page.wait_for_timeout(1500)
-
-        # Find any subfolder links rendered on screen and click into them
-        subfolders = page.locator("a[href*='/d/']").all()
-        subfolder_urls = []
-        for sf in subfolders:
-            href = sf.get_attribute("href")
-            if href and href not in subfolder_urls and href != "/d/OBVVp1LI" and ROOT_URL not in href:
-                subfolder_urls.append(href if href.startswith("http") else f"https://gofile.io{href}")
-
-        print(f"📂 Found {len(subfolder_urls)} subfolder(s). Navigating into each...")
-
-        for s_url in subfolder_urls:
-            try:
-                print(f"➜ Opening subfolder: {s_url}")
-                page.goto(s_url, wait_until="networkidle", timeout=40000)
-                page.wait_for_timeout(3000)
-                for _ in range(4):
-                    page.mouse.wheel(0, 5000)
-                    page.wait_for_timeout(1000)
-            except Exception as e:
-                print(f"Subfolder notice: {e}")
+        log("🔑 Extracting browser session tokens and cookies...")
+        auth_data = page.evaluate("""() => {
+            let accToken = localStorage.getItem('accountToken') || localStorage.getItem('token') || '';
+            let wt = localStorage.getItem('websiteToken') || '';
+            return {
+                token: accToken,
+                wt: wt,
+                cookie: document.cookie || ''
+            };
+        }""")
 
         cookies = context.cookies()
-        cookie_header = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
-        
-        token = page.evaluate("() => localStorage.getItem('accountToken') || localStorage.getItem('token') || ''")
+        if not auth_data["cookie"]:
+            auth_data["cookie"] = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+
+        log(f"✅ Auth ready. Cookie length: {len(auth_data['cookie'])}, AccToken: {bool(auth_data['token'])}")
+
+        log("🚀 Crawling directory tree through browser session...")
+        crawl_results = page.evaluate("""async (rootFolderId) => {
+            let queue = [rootFolderId];
+            let visited = new Set();
+            let allFiles = [];
+            let token = localStorage.getItem('accountToken') || localStorage.getItem('token') || '';
+            let wt = localStorage.getItem('websiteToken') || '';
+
+            // Get base request headers
+            let customHeaders = {};
+            if (token) customHeaders['Authorization'] = 'Bearer ' + token;
+            if (wt) customHeaders['X-Website-Token'] = wt;
+
+            while (queue.length > 0) {
+                let currentFolder = queue.shift();
+                if (visited.has(currentFolder)) continue;
+                visited.add(currentFolder);
+
+                let pageNum = 1;
+                while (pageNum <= 20) {
+                    let apiUrl = `https://api.gofile.io/contents/${currentFolder}?page=${pageNum}&pageSize=100&sortField=createTime&sortDirection=-1`;
+                    if (wt) apiUrl += `&wt=${encodeURIComponent(wt)}`;
+
+                    try {
+                        let resp = await fetch(apiUrl, {
+                            method: 'GET',
+                            headers: customHeaders
+                        });
+                        let json = await resp.json();
+                        
+                        if (json.status !== 'ok' || !json.data || !json.data.children) {
+                            break;
+                        }
+
+                        let children = json.data.children;
+                        let count = 0;
+
+                        for (let id in children) {
+                            count++;
+                            let item = children[id];
+                            if (item.type === 'folder') {
+                                let code = item.code || item.id || id;
+                                if (!visited.has(code) && !queue.includes(code)) {
+                                    queue.push(code);
+                                }
+                            } else {
+                                let dlUrl = item.link || item.directDownload || item.downloadPage || '';
+                                if (dlUrl) {
+                                    allFiles.push({
+                                        id: 'gofile:' + id,
+                                        item_id: id,
+                                        name: item.name || 'Untitled',
+                                        url: dlUrl,
+                                        size: item.size ? (item.size / (1024 * 1024)).toFixed(2) + ' MB' : 'Unknown'
+                                    });
+                                }
+                            }
+                        }
+
+                        if (count === 0 || pageNum >= (json.data.totalChildrenPages || 1)) {
+                            break;
+                        }
+                        pageNum++;
+                    } catch (err) {
+                        break;
+                    }
+                }
+            }
+            return allFiles;
+        }""", ROOT_FOLDER_ID)
 
         browser.close()
 
-    file_list = list(captured_data["files"].values())
-    print(f"🎉 Crawl finished: Intercepted {len(file_list)} total playable files.")
+    log(f"🎉 Crawl finished: Retrieved {len(crawl_results)} total items.")
 
-    output = {
-        "auth": {
-            "token": token,
-            "cookie": cookie_header,
-            "headers": captured_data["auth"]
-        },
-        "files": file_list,
+    output_payload = {
+        "auth": auth_data,
+        "files": crawl_results,
         "updated_at": int(time.time())
     }
 
     with open("data.json", "w", encoding="utf-8") as f:
-        json.dump(output, f, indent=2)
+        json.dump(output_payload, f, indent=2)
+
+    log("💾 Successfully updated data.json")
 
 if __name__ == "__main__":
-    scrape_via_browser_interception()
+    scrape()
