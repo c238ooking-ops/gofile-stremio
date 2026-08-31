@@ -37,7 +37,6 @@ def scrape():
             if "contents/" in request.url:
                 if not captured_headers:
                     captured_headers.update(dict(request.headers))
-                # Extract dynamic wt token from query parameters if present
                 if "wt=" in request.url:
                     parts = request.url.split("wt=")
                     if len(parts) > 1:
@@ -58,7 +57,6 @@ def scrape():
         cookies = context.cookies()
         cookie_header = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
         
-        # Fallback extraction for websiteToken
         if not website_token:
             website_token = page.evaluate("() => localStorage.getItem('websiteToken') || ''")
 
@@ -74,8 +72,6 @@ def scrape():
     if cookie_header:
         captured_headers["cookie"] = cookie_header
 
-    log(f"🔑 Auth captured. WT token: {bool(website_token)}, Total headers: {len(captured_headers)}")
-
     session = requests.Session()
     session.headers.update(captured_headers)
 
@@ -83,7 +79,7 @@ def scrape():
     visited = set()
     all_files = {}
 
-    log("🚀 Crawling complete Gofile directory tree with retry backoff...")
+    log("🚀 Crawling Gofile directory tree...")
 
     while folders_queue:
         folder_id, folder_name = folders_queue.popleft()
@@ -101,10 +97,9 @@ def scrape():
                 api_url += f"&wt={website_token}"
 
             res_data = None
-            # Retry loop with progressive backoff for rate-limits
             for attempt in range(4):
                 try:
-                    time.sleep(0.5)  # Safe spacing between calls to prevent rate limits
+                    time.sleep(0.5)
                     res = session.get(api_url, timeout=25).json()
                     status = res.get("status")
 
@@ -112,13 +107,10 @@ def scrape():
                         res_data = res
                         break
                     elif status in ["error-rateLimit", "error-auth", "error-token"]:
-                        wait_sec = (attempt + 1) * 3
-                        log(f"⏳ [{status}] on '{folder_name}'. Backing off {wait_sec}s...")
-                        time.sleep(wait_sec)
+                        time.sleep((attempt + 1) * 3)
                     else:
-                        log(f"⚠️ Folder [{folder_name}] status: {status}")
                         break
-                except Exception as err:
+                except Exception:
                     time.sleep(2)
 
             if not res_data:
@@ -139,16 +131,14 @@ def scrape():
                         folders_queue.append((code, item_name))
                         folder_subfolders += 1
                 else:
-                    dl_url = item.get("link") or item.get("directDownload") or item.get("downloadPage")
                     size = item.get("size", 0)
                     size_mb = f"{(size / (1024 * 1024)):.2f} MB" if size else "Unknown"
 
-                    if item_id not in all_files and dl_url:
+                    if item_id not in all_files:
                         all_files[item_id] = {
                             "id": f"gofile:{item_id}",
                             "item_id": item_id,
                             "name": item_name,
-                            "url": dl_url,
                             "size": size_mb
                         }
                         folder_files += 1
@@ -158,13 +148,12 @@ def scrape():
                 break
             page_num += 1
 
-        log(f"📂 [{folder_name}] ➜ {folder_files} files, {folder_subfolders} subfolders discovered.")
+        log(f"📂 [{folder_name}] ➜ {folder_files} files, {folder_subfolders} subfolders.")
 
     file_list = list(all_files.values())
-    log(f"🎉 Crawl finished: Extracted {len(file_list)} total playable files across {len(visited)} folders.")
+    log(f"🎉 Extracted {len(file_list)} total playable files.")
 
     output_payload = {
-        "headers": captured_headers,
         "files": file_list,
         "updated_at": int(time.time())
     }
