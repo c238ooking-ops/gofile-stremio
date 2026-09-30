@@ -295,24 +295,6 @@
       "size": "276.81 MB"
     },
     {
-      "id": "gofile:bc5a1d79-f917-4b39-93a0-a4eede328404",
-      "item_id": "bc5a1d79-f917-4b39-93a0-a4eede328404",
-      "name": "Ed, Edd n Eddy - S03 E13-E14 - Boys Will Be Eds and Ed or Tails (720p - HMax Web-DL).mp4",
-      "size": "262.62 MB"
-    },
-    {
-      "id": "gofile:f2be24c2-af99-4cbe-8746-3dbfc10fb793",
-      "item_id": "f2be24c2-af99-4cbe-8746-3dbfc10fb793",
-      "name": "Ed, Edd n Eddy - S03 E11-E12 - X Marks the Ed and From Here to Ed (720p - HMax Web-DL).mp4",
-      "size": "298.22 MB"
-    },
-    {
-      "id": "gofile:975c03aa-60ee-4a03-ab7a-17044ccd9b13",
-      "item_id": "975c03aa-60ee-4a03-ab7a-17044ccd9b13",
-      "name": "Ed, Edd n Eddy - S03 E05-E06 - It Came From Outer Ed and 3 Squares and an Ed (720p - HMax Web-DL).mp4",
-      "size": "287.56 MB"
-    },
-    {
       "id": "gofile:b14a598d-6f6d-4b13-b6d0-62d78cfc4068",
       "item_id": "b14a598d-6f6d-4b13-b6d0-62d78cfc4068",
       "name": "Ed, Edd n Eddy - S03 E15-E16 - Gimme, Gimme Never Ed and My Fair Ed (720p - HMax Web-DL).srt",
@@ -323,18 +305,6 @@
       "item_id": "a6baa35e-be04-478f-af93-cf56a34045c7",
       "name": "Ed, Edd n Eddy - S03 E23 - If It Smells Like an Ed (720p - HMax Web-DL).mp4",
       "size": "236.45 MB"
-    },
-    {
-      "id": "gofile:92952b66-280c-4ba8-bee6-ceb96cd550dd",
-      "item_id": "92952b66-280c-4ba8-bee6-ceb96cd550dd",
-      "name": "Ed, Edd n Eddy - S03 E21-E22 - Brother, Can You Spare an Ed and The Day the Ed Stood Still (720p - HMax Web-DL).mp4",
-      "size": "240.11 MB"
-    },
-    {
-      "id": "gofile:e55feb0e-c1dd-492e-9e27-2f8073f649cc",
-      "item_id": "e55feb0e-c1dd-492e-9e27-2f8073f649cc",
-      "name": "Ed, Edd n Eddy - S03 E09-E10 - Will Work for Ed and Ed, Ed and Away (720p - HMax Web-DL).mp4",
-      "size": "274.84 MB"
     },
     {
       "id": "gofile:df193f42-343d-48fb-9875-ab1816c4511a",
@@ -577,5 +547,5 @@
       "size": "1.42 MB"
     }
   ],
-  "updated_at": 1790719727
+  "updated_at": 1790745360
 }
