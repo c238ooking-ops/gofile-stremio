@@ -109,12 +109,6 @@
       "size": "298.47 MB"
     },
     {
-      "id": "gofile:a419a685-252f-453a-acd3-65bb9f4b0399",
-      "item_id": "a419a685-252f-453a-acd3-65bb9f4b0399",
-      "name": "Ed, Edd n Eddy - S01 E07-E08 - Dawn of the Eds and Virt-Ed-Go (720p - HMax Web-DL).mp4",
-      "size": "278.86 MB"
-    },
-    {
       "id": "gofile:d627b331-13d4-4cae-b313-59de85d519bc",
       "item_id": "d627b331-13d4-4cae-b313-59de85d519bc",
       "name": "Ed, Edd n Eddy - S01 E19-E20 - A Glass of Warm Ed and Flea-Bitten Ed (720p - HMax Web-DL).mp4",
@@ -475,18 +469,6 @@
       "size": "13.95 MB"
     },
     {
-      "id": "gofile:de724b9e-c534-4db6-bbe9-e66c86c45dfb",
-      "item_id": "de724b9e-c534-4db6-bbe9-e66c86c45dfb",
-      "name": "Ed, Edd n Eddy - S00 E07 - The Eds are Coming, the Eds Are Coming (720p).mp4",
-      "size": "377.37 MB"
-    },
-    {
-      "id": "gofile:fd7d242f-d009-4e60-ad6b-36c8f3f046d8",
-      "item_id": "fd7d242f-d009-4e60-ad6b-36c8f3f046d8",
-      "name": "Ed, Edd n Eddy - S00 E02 - Ed, Edd n Eddy's Jingle Jingle Jangle (720p).mp4",
-      "size": "362.82 MB"
-    },
-    {
       "id": "gofile:f422a9cf-b996-4d12-916e-852bb478dd66",
       "item_id": "f422a9cf-b996-4d12-916e-852bb478dd66",
       "name": "Ed, Edd n Eddy - EXTRA - Promo, Antonucci in Best Day Edder, No. 6-1 (240p).mp4",
@@ -547,5 +529,5 @@
       "size": "1.42 MB"
     }
   ],
-  "updated_at": 1790806120
+  "updated_at": 1790832671
 }
