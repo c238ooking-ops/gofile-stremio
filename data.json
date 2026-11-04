@@ -61,46 +61,10 @@
       "size": "453.24 MB"
     },
     {
-      "id": "gofile:076f8a98-b6b1-445b-aa6c-d6b9adc9c8fa",
-      "item_id": "076f8a98-b6b1-445b-aa6c-d6b9adc9c8fa",
-      "name": "The.Night.Manager.S02E01.720p.AMZN.WEB-DL.DDP5.1.H.265-XDMovies.mkv",
-      "size": "429.63 MB"
-    },
-    {
       "id": "gofile:26237ea3-7555-4a12-bd33-5505e0123f08",
       "item_id": "26237ea3-7555-4a12-bd33-5505e0123f08",
       "name": "The.Night.Manager.S02E06.720p.AMZN.WEB-DL.DDP5.1.H.265-XDMovies.mkv",
       "size": "420.58 MB"
-    },
-    {
-      "id": "gofile:02f20ba0-2ecb-452d-a5b1-31c5c7e4db2c",
-      "item_id": "02f20ba0-2ecb-452d-a5b1-31c5c7e4db2c",
-      "name": "The.Night.Manager.S02E05.720p.AMZN.WEB-DL.DDP5.1.H.265-XDMovies.mkv",
-      "size": "425.86 MB"
-    },
-    {
-      "id": "gofile:76854baa-5385-46fb-ba0d-7707fd37ac3a",
-      "item_id": "76854baa-5385-46fb-ba0d-7707fd37ac3a",
-      "name": "The.Night.Manager.S02E03.720p.AMZN.WEB-DL.DDP5.1.H.265-XDMovies.mkv",
-      "size": "397.22 MB"
-    },
-    {
-      "id": "gofile:dfc50dfe-e66f-46fb-a6f9-14b104e81eb7",
-      "item_id": "dfc50dfe-e66f-46fb-a6f9-14b104e81eb7",
-      "name": "The Night Manager S01E06 720p 10bit BluRay HEVC x265 [ AMZN Hindi DDP5.1 + English AAC2.0 ] ESub ~ LUCi ~ PSA.mkv",
-      "size": "389.16 MB"
-    },
-    {
-      "id": "gofile:c2607f73-4a96-43d5-bb18-3dcbb620fbe7",
-      "item_id": "c2607f73-4a96-43d5-bb18-3dcbb620fbe7",
-      "name": "The Night Manager S01E04 720p 10bit BluRay HEVC x265 [ AMZN Hindi DDP5.1 + English AAC2.0 ] ESub ~ LUCi ~ PSA.mkv",
-      "size": "380.22 MB"
-    },
-    {
-      "id": "gofile:e355c8ec-122e-4363-936b-6580521bcb11",
-      "item_id": "e355c8ec-122e-4363-936b-6580521bcb11",
-      "name": "The Night Manager S01E02 720p 10bit BluRay HEVC x265 [ AMZN Hindi DDP5.1 + English AAC2.0 ] ESub ~ LUCi ~ PSA.mkv",
-      "size": "414.27 MB"
     },
     {
       "id": "gofile:f01d8d12-adf9-44af-b524-bd536cef311d",
@@ -139,5 +103,5 @@
       "size": "1450.15 MB"
     }
   ],
-  "updated_at": 1793747382
+  "updated_at": 1793771764
 }
